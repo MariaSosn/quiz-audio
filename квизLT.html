@@ -1,0 +1,865 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Семейный квиз — Финальная версия</title>
+  <style>
+    html, body {
+  height:100%;
+}
+
+body{
+  margin:0;
+  display:flex;
+  justify-content:center;
+  align-items:center;
+  font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background:#ffe5d0;
+  color:#3a2a1a;
+}
+    .screen{
+      display:none; flex-direction:column; align-items:center; justify-content:center;
+      width:100%; height:100%; padding:40px; text-align:center;
+    }
+    #titleScreen{
+      background-image:url("little tales back.png");
+      background-size:cover;
+      background-position:center;
+      background-repeat:no-repeat;
+      color:#ffffff;
+      text-shadow:0 2px 8px rgba(0,0,0,0.6);
+    }
+    .active{display:flex;}
+    h1{margin:20px 0; font-size:48px; font-weight:700;}
+    h2{margin:20px 0; font-size:32px; font-weight:600;}
+    .question{font-size:24px; margin:20px 0;}
+    .answer-input{margin:20px 0; padding:10px; font-size:18px; width:60%; max-width:720px; border:1px solid #ccc; border-radius:12px;}
+    .btn{background:#ff9a5c; border:none; padding:15px 30px; font-size:18px; font-weight:600; border-radius:12px; cursor:pointer; margin-top:20px;}
+    .btn:hover{opacity:0.9;}
+    .timer{margin-top:14px; font-size:22px; font-weight:700;}
+    .answer-reveal{opacity:0; transition:opacity 0.8s ease; font-size:22px; font-weight:600;}
+    .answer-reveal.visible{opacity:1;}
+    .slide-image{max-width:80vw; max-height:50vh; margin:10px 0; border-radius:12px;}
+
+    /* Confetti overlay on results */
+    #results{position:relative; overflow:hidden;}
+    #results h2, #resultsList{position:relative; z-index:2;}
+    #confettiOverlay{
+      position:absolute; inset:0; z-index:1;
+      pointer-events:none;
+      background-image:url("https://commons.wikimedia.org/wiki/Special:FilePath/Wikipedia20%20animated%20Confetti.gif");
+      background-repeat:repeat;
+      background-size:560px auto;
+      opacity:0;
+      transition:opacity 500ms ease;
+      filter:saturate(1.1) contrast(1.05);
+    }
+    #confettiOverlay.visible{opacity:0.85;}
+    @media (prefers-reduced-motion: reduce){
+      #confettiOverlay{display:none;}
+    }
+  </style>
+  <noscript>Для игры нужен включенный JavaScript.</noscript>
+  <audio id="slideAudio" preload="auto"></audio>
+  <script>
+  (function(){
+    'use strict';
+    const root = window.quiz = window.quiz || {};
+    root.answers = root.answers || {};
+    root.timers = root.timers || {};
+    root.revealTimers = root.revealTimers || {};
+    root.autoAdvanceTimer = null;
+    root.audio = null;
+    root.confettiDelayTimer = root.confettiDelayTimer || null;
+    root.confettiHideTimer = root.confettiHideTimer || null;
+
+    // Explicit flow order for all slides
+    const FLOW = [
+      'titleScreen',
+      'round1Title','q1','q2','q3','q4','round1End','ans1q1','ans1q2','ans1q3','ans1q4',
+      'round2Title','q5','q6','q7','q8','round2End','ans2q1','ans2q2','ans2q3','ans2q4',
+      'round3Title','q9','q10','q11','q12','round3End','ans3q1','ans3q2','ans3q3','ans3q4',
+      'round4Title','q13','q14','q15','q16','round4End','ans4q1','ans4q2','ans4q3','ans4q4',
+      'final','results'
+    ];
+
+    // Correct answers
+    const CORRECT = {
+      a1: ['библиотека','library'],
+      a2: ['роблокс','roblox','roblox game'],
+      a3: ['незнайка','neznaika','neznayka'],
+      a4: ['гермиона грейнджер','гермиона','hermione granger','hermione'],
+      a5: ['щенячий патруль','paw patrol'],
+      a6: ['стук в дверь','стук в двери','стук','knock on the door','knock'],
+      a7: ['миссис поттс','mrs potts','горшочек','чайник'],
+      a8: ['queen','квин'],
+      a9: ['головоломка','inside out'],
+      a10: ['букварь','буквар'],
+      a11: ['1-b,2-c,3-a','1b,2c,3a','1 b 2 c 3 a','1б,2в,3а','1б2в3а'],
+      a12: ['шрек','shrek'],
+      a13: ['стив джобс','steve jobs','джобс'],
+      a14: ['барабан','drum'],
+      a15: ['не резать','no cut','no-cut','do not cut'],
+      a16: ['дед мороз','санта','санта клаус','санта-клаус','santa','santa claus']
+    };
+
+    function normalizeAnswer(str){
+      if(!str) return '';
+      let s = String(str).toLowerCase().trim();
+      s = s.replace(/["'`‘’“”()\[\]{}:;!?.,]/g,' ');
+      s = s.replace(/ё/g,'е');
+      s = s.replace(/\s+/g,' ');
+      return s.trim();
+    }
+
+    function compactAnswer(str){
+      return normalizeAnswer(str).replace(/[\s\-_,]/g,'');
+    }
+
+    function levenshtein(a,b){
+      const m=a.length, n=b.length;
+      if(m===0) return n; if(n===0) return m;
+      const dp=new Array(n+1);
+      for(let j=0;j<=n;j++) dp[j]=j;
+      for(let i=1;i<=m;i++){
+        let prev=dp[0]; dp[0]=i;
+        for(let j=1;j<=n;j++){
+          const tmp=dp[j];
+          dp[j]=Math.min(
+            dp[j]+1,
+            dp[j-1]+1,
+            prev + (a[i-1]===b[j-1]?0:1)
+          );
+          prev=tmp;
+        }
+      }
+      return dp[n];
+    }
+
+    function approximatelyEqual(userInput, variants){
+      if(!userInput) return false;
+      const userNorm = normalizeAnswer(userInput);
+      const userComp = compactAnswer(userInput);
+      for(const v of (variants||[])){
+        const vNorm = normalizeAnswer(v);
+        const vComp = compactAnswer(v);
+        if(userNorm===vNorm || userComp===vComp) return true;
+        const dist = levenshtein(userNorm, vNorm);
+        const maxLen = Math.max(userNorm.length, vNorm.length) || 1;
+        const ratio = dist / maxLen;
+        if(ratio <= 0.25) return true;
+      }
+      return false;
+    }
+
+    function nextScreenId(currentId){
+      const idx = FLOW.indexOf(currentId);
+      if(idx >= 0 && idx < FLOW.length - 1){
+        return FLOW[idx+1];
+      }
+      return null;
+    }
+
+    function startGame(){ showScreen('round1Title'); }
+
+    function ensureAudio(){
+      if(!root.audio){ root.audio = document.getElementById('slideAudio'); }
+      return root.audio;
+    }
+
+    function tryAutoplay(){
+      const a = ensureAudio();
+      if(!a) return;
+      a.play().catch(()=>{
+        const once = ()=>{
+          a.play().catch(()=>{});
+          window.removeEventListener('pointerdown', once, { capture:true });
+          window.removeEventListener('keydown', once, { capture:true });
+        };
+        window.addEventListener('pointerdown', once, { capture:true, once:true });
+        window.addEventListener('keydown', once, { capture:true, once:true });
+      });
+    }
+
+    function clearAutoAdvance(){
+      if(root.autoAdvanceTimer){ clearTimeout(root.autoAdvanceTimer); root.autoAdvanceTimer = null; }
+    }
+
+    function scheduleAutoAdvance(currentId){
+      clearAutoAdvance();
+      root.autoAdvanceTimer = setTimeout(()=>{
+        const active = document.querySelector('.screen.active');
+        if(!active || active.id!==currentId) return;
+        const nid = nextScreenId(currentId);
+        if(nid) showScreen(nid);
+      }, 60000);
+    }
+
+    function showScreen(id){
+      const target=document.getElementById(id);
+      if(!target) return;
+
+      clearAutoAdvance();
+
+      document.querySelectorAll('.answer-reveal iframe').forEach(f=>{
+        try{ f.src='about:blank'; }catch(_e){}
+        f.remove();
+      });
+      document.querySelectorAll('.answer-reveal video').forEach(v=>{
+        try{ v.pause(); v.removeAttribute('src'); v.load(); }catch(_e){}
+        v.remove();
+      });
+
+      const audio = ensureAudio();
+      if(audio){ audio.pause(); audio.removeAttribute('src'); audio.load(); }
+
+      document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
+      target.classList.add('active');
+
+      const confetti=document.getElementById('confettiOverlay');
+      if(confetti){
+        confetti.classList.remove('visible');
+        if(root.confettiDelayTimer){ clearTimeout(root.confettiDelayTimer); root.confettiDelayTimer=null; }
+        if(root.confettiHideTimer){ clearTimeout(root.confettiHideTimer); root.confettiHideTimer=null; }
+        if(id==='results'){
+          confetti.classList.add('visible');
+          root.confettiHideTimer = setTimeout(()=>{
+            confetti.classList.remove('visible');
+          }, 30000);
+        }
+      }
+
+      const timerEl=target.querySelector('.timer');
+      if(timerEl) startTimer(timerEl.id);
+
+      const imgSrc=target.dataset.image;
+      let imgEl=target.querySelector('.slide-image');
+      if(imgSrc){
+        if(!imgEl){
+          imgEl=document.createElement('img');
+          imgEl.className='slide-image';
+          target.insertBefore(imgEl, target.firstChild);
+        }
+        imgEl.src=imgSrc;
+        imgEl.style.display='';
+      }
+
+      const audioSrc=target.dataset.audio;
+      const wantsLoop=target.dataset.audioLoop==='true'||target.dataset.audioLoop==='1';
+      if(audioSrc && audio){
+        audio.src=audioSrc;
+        audio.loop=!!wantsLoop;
+        tryAutoplay();
+      }
+
+      const ansMatch=id.match(/^ans(\d)q(\d)$/);
+      const revealEl=target.querySelector('.answer-reveal');
+      if(ansMatch&&revealEl){
+        const round=parseInt(ansMatch[1],10);
+        const idxInRound=parseInt(ansMatch[2],10);
+        const globalIdx=(round-1)*4+idxInRound;
+
+        const srcQ=document.querySelector('#q'+globalIdx+' .question');
+        const qText=srcQ?srcQ.textContent.trim():`Вопрос ${globalIdx}`;
+
+        const container=target.querySelector('.question');
+
+        let dup=container.querySelector('.q-dup');
+        if(!dup){
+          dup=document.createElement('div');
+          dup.className='q-dup';
+          container.insertBefore(dup,revealEl);
+          container.insertBefore(document.createElement('br'),revealEl);
+        }
+        dup.textContent=qText;
+
+        revealEl.classList.remove('visible');
+        if(root.revealTimers[id]) clearTimeout(root.revealTimers[id]);
+        root.revealTimers[id]=setTimeout(()=>{
+          revealEl.classList.add('visible');
+
+          const aSrc = revealEl.dataset.audio;
+          if (aSrc && audio) {
+            audio.pause();
+            audio.removeAttribute('src');
+            audio.load();
+            audio.src = aSrc;
+            audio.loop = false;
+            tryAutoplay();
+          }
+
+          const videoSrc = revealEl.dataset.video;
+          if (videoSrc && !revealEl.querySelector('video')) {
+            const vid = document.createElement('video');
+            vid.src = videoSrc;
+            vid.controls = true;
+            vid.autoplay = true;
+            vid.className = 'answer-video';
+            vid.style.maxWidth = '80%';
+            vid.style.marginTop = '20px';
+            revealEl.appendChild(document.createElement('br'));
+            revealEl.appendChild(vid);
+          }
+
+          const ytSrc = revealEl.dataset.youtube;
+          if (ytSrc && !revealEl.querySelector('iframe')) {
+            const iframe = document.createElement('iframe');
+            iframe.src = ytSrc + (ytSrc.includes('?')?'&':'?') + 'autoplay=1';
+            iframe.width = "560";
+            iframe.height = "315";
+            iframe.frameBorder = "0";
+            iframe.allow =
+              "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture";
+            iframe.allowFullscreen = true;
+            iframe.style.marginTop = "20px";
+            revealEl.appendChild(document.createElement('br'));
+            revealEl.appendChild(iframe);
+          }
+        },3000);
+      }
+
+      scheduleAutoAdvance(id);
+    }
+
+    function startTimer(timerId){
+      const el=document.getElementById(timerId); if(!el) return;
+      if(root.timers[timerId]) clearInterval(root.timers[timerId]);
+      let t=60; el.textContent=t;
+      const screenEl=el.closest('.screen'); const screenId=screenEl?screenEl.id:null;
+      root.timers[timerId]=setInterval(()=>{
+        t--; el.textContent=t;
+        if(t<=0){
+          clearInterval(root.timers[timerId]);
+          if(screenId){
+            const nextId=nextScreenId(screenId);
+            if(nextId) showScreen(nextId);
+          }
+        }
+      },1000);
+    }
+
+    function nextWithTimer(inputId){
+      const active = document.querySelector('.screen.active');
+      if(active){
+        active.querySelectorAll('.timer').forEach(tEl=>{
+          const tid=tEl.id; if(root.timers[tid]) clearInterval(root.timers[tid]);
+        });
+      }
+      clearAutoAdvance();
+      const valEl=inputId?document.getElementById(inputId):null;
+      const val=valEl?(valEl.value||'') : '';
+      if(inputId) root.answers[inputId]=val;
+      const curId = active?active.id:null;
+      const nid = curId?nextScreenId(curId):null;
+      if(nid) showScreen(nid);
+    }
+
+    function showResults(){
+      showScreen('results');
+      const list=document.getElementById('resultsList'); if(!list) return;
+      list.innerHTML='';
+      const keys=Object.keys(root.answers).sort((a,b)=>parseInt(a.replace('a',''))-parseInt(b.replace('a','')));
+
+      let totalScore=0;
+      const maxScore = 12 + 12;
+      const correctByRound = { 1:0, 2:0, 3:0, 4:0 };
+
+      keys.forEach(k=>{
+        const qNum = parseInt(k.replace('a',''),10);
+        const userAns = root.answers[k]||'';
+        const correctVariants = CORRECT[k] || [];
+        const isCorrect = approximatelyEqual(userAns, correctVariants);
+
+        const perQuestionScore = (qNum>=13 ? 3 : 1) * (isCorrect ? 1 : 0);
+        totalScore += perQuestionScore;
+
+        if(isCorrect){
+          const round = (qNum<=4) ? 1 : (qNum<=8) ? 2 : (qNum<=12) ? 3 : 4;
+          correctByRound[round] += 1;
+        }
+      });
+
+      const summary=document.createElement('div');
+      summary.style.margin='16px 0 8px';
+      summary.style.fontSize='28px';
+      summary.style.fontWeight='900';
+      summary.style.lineHeight='1.2';
+      summary.textContent = `Итоговый счёт: ${totalScore} / ${maxScore}`;
+
+      const breakdown=document.createElement('div');
+      breakdown.style.margin='12px 0 0';
+      breakdown.style.fontSize='18px';
+      breakdown.style.fontWeight='700';
+      breakdown.style.lineHeight='1.5';
+      breakdown.innerHTML =
+        `Раунд 1: ${correctByRound[1]} / 4 правильных<br>`+
+        `Раунд 2: ${correctByRound[2]} / 4 правильных<br>`+
+        `Раунд 3: ${correctByRound[3]} / 4 правильных<br>`+
+        `Раунд 4: ${correctByRound[4]} / 4 правильных`;
+
+      list.appendChild(summary);
+      list.appendChild(breakdown);
+    }
+
+    function buildResultsArray(){
+      const keys=Object.keys(root.answers).sort((a,b)=>parseInt(a.replace('a',''))-parseInt(b.replace('a','')));
+      return keys.map(k=>{
+        const n=parseInt(k.replace('a',''),10);
+        const qEl=document.querySelector('#q'+n+' .question');
+        const questionText=qEl ? qEl.textContent.trim() : ('Вопрос '+n);
+        return { id:k, questionNumber:n, question:questionText, answer:(root.answers[k]||'') };
+      });
+    }
+
+    function exportResults(format){
+      const rows=buildResultsArray();
+      const now=new Date();
+      const stamp=now.toISOString().replace(/[:.]/g,'-');
+      let blob, filename;
+
+      if(format==='json'){
+        const json=JSON.stringify({ createdAt: now.toISOString(), results: rows }, null, 2);
+        blob=new Blob([json],{type:'application/json;charset=utf-8'});
+        filename=`quiz-results-${stamp}.json`;
+      }else{
+        const header=['id','questionNumber','question','answer'];
+        const esc=v=>('"'+String(v).replace(/"/g,'""')+'"');
+        const body=rows.map(r=>[r.id,r.questionNumber,esc(r.question),esc(r.answer)].join(',')).join('\n');
+        const csv=header.join(',')+'\n'+body;
+        const BOM='\ufeff';
+        blob=new Blob([BOM+csv],{type:'text/csv;charset=utf-8'});
+        filename=`quiz-results-${stamp}.csv`;
+      }
+
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement('a');
+      a.href=url; a.download=filename;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); },0);
+    }
+
+    document.addEventListener('click',(e)=>{
+      const btn=e.target.closest('button'); if(!btn) return;
+      const action=btn.dataset.action;
+      const inputId=btn.dataset.input;
+      if(action==='start'){ e.preventDefault(); return startGame(); }
+      if(action==='showResults'){ e.preventDefault(); return showResults(); }
+      if(action==='export'){
+        e.preventDefault();
+        const fmt=btn.dataset.format||'csv';
+        exportResults(fmt);
+        return;
+      }
+      e.preventDefault();
+      nextWithTimer(inputId||null);
+    });
+
+    document.addEventListener('keydown',(e)=>{
+      const active=document.querySelector('.screen.active');
+      if(active&&/^ans\dq\d$/.test(active.id)){
+        const nid = nextScreenId(active.id);
+        if(nid) showScreen(nid);
+      }
+    });
+
+    window.startGame=startGame;
+    window.showScreen=showScreen;
+    window.nextWithTimer=nextWithTimer;
+    window.showResults=showResults;
+  })();
+  </script>
+</head>
+<body>
+
+  <!-- ТИТУЛЬНЫЙ ЭКРАН -->
+  <div class="screen active" id="titleScreen">
+    <h1>Семейный квиз</h1>
+    <h2>Играют все!</h2>
+    <button class="btn" data-action="start">Начать игру</button>
+  </div>
+
+  <!-- ПРОМЕЖУТОЧНЫЕ СЛАЙДЫ -->
+  <div class="screen" id="round1Title" data-audio="https://cdn.jsdelivr.net/gh/MariaSosn/quiz-audio@main/apt.mp3" data-audio-loop="true">
+    <h2>Раунд 1: Разминка</h2>
+    <p>Вопросы обо всем🤓 1 балл за каждый правильный ответ.</p>
+    <button class="btn">Поехали</button>
+  </div>
+
+  <!-- ВОПРОСЫ РАУНД 1 -->
+  <div class="screen" id="q1">
+    <div class="question">На каких зданиях в Древней Греции были надписи: "Здесь живут мертвые и говорят немые"?</div>
+    <input type="text" class="answer-input" id="a1">
+    <div class="timer" id="t1">60</div>
+    <button class="btn" data-input="a1">Дальше</button>
+  </div>
+
+  <div class="screen" id="q2">
+    <div class="question">В июле 2025 в эту компьютерную игру вернулся исчезнувший на несколько лет фирменный звук-мем. Назовите игру.</div>
+    <input type="text" class="answer-input" id="a2">
+    <div class="timer" id="t2">60</div>
+    <button class="btn" data-input="a2">Дальше</button>
+  </div>
+
+  <div class="screen" id="q3">
+    <div class="question">Его знают почти все. Он был художником, поэтом, музыкантом, доктором, путешественником, космонавтом. Кто он?</div>
+    <input type="text" class="answer-input" id="a3">
+    <div class="timer" id="t3">60</div>
+    <button class="btn" data-input="a3">Дальше</button>
+  </div>
+
+  <div class="screen" id="q4">
+    <div class="question">Кому принадлежит эта фраза из книги "Да потому, что у тебя эмоциональный диапазон, как у чайной ложки"?</div>
+    <input type="text" class="answer-input" id="a4">
+    <div class="timer" id="t4">60</div>
+    <button class="btn" data-input="a4">Завершить раунд</button>
+  </div>
+
+  <div class="screen" id="round1End">
+    <h2>Раунд 1 завершен!</h2>
+    <button class="btn">К ответам</button>
+  </div>
+
+  <!-- ОТВЕТЫ РАУНД 1 -->
+  <div class="screen" id="ans1q1">
+    <div class="question">
+      Вопрос 1<br><br>
+      <span class="answer-reveal">
+        Правильный ответ: Библиотека<br><br>
+        <img src="https://i.postimg.cc/1tGcTkg9/728x546-1-12a3186a898a742a055bb141b55410e0-2364x1773-0xac120003-20930639081672497097-jpeg.webp"
+             alt="Библиотека"
+             style="max-width:400px; border-radius:10px;">
+      </span>
+    </div>
+    <br><br>
+    <button class="btn">Дальше</button>
+  </div>
+
+  <div class="screen" id="ans1q2">
+    <div class="question">
+      Вопрос 2<br><br>
+      <span class="answer-reveal">
+        Правильный ответ: Роблокс/Roblox<br><br>
+        <img src="https://i.postimg.cc/DwpfTmVZ/image.png"
+             alt="Роблокс"
+             style="max-width:400px; border-radius:10px;">
+      </span>
+    </div>
+    <br><br>
+    <button class="btn">Дальше</button>
+  </div>
+
+  <div class="screen" id="ans1q3">
+    <div class="question">
+      Вопрос 3<br><br>
+      <span class="answer-reveal">
+        Правильный ответ: Незнайка<br><br>
+        <img src="https://i.postimg.cc/WbzRnyQH/neznajka.jpg"
+             alt="Незнайка"
+             style="max-width:400px; border-radius:10px;">
+      </span>
+    </div>
+    <br><br>
+    <button class="btn">Дальше</button>
+  </div>
+
+  <div class="screen" id="ans1q4">
+    <div class="question">
+      Вопрос 4<br><br>
+      <span class="answer-reveal">
+        Правильный ответ: Гермиона Грейнджер<br><br>
+        <img src="https://i.postimg.cc/BnPZJ4JB/image.jpg"
+             alt="Гермиона"
+             style="max-width:400px; border-radius:10px;">
+      </span>
+    </div>
+    <br><br>
+    <button class="btn">Следующий раунд</button>
+  </div>
+
+  <!-- ROUND 2 TITLE -->
+  <div class="screen" id="round2Title" data-audio="https://cdn.jsdelivr.net/gh/MariaSosn/quiz-audio@main/мираж.mp3" data-audio-loop="true">
+    <h2>Раунд 2: Музыкальный</h2>
+    <p>Все, что связано с музыкой🎼 1 балл за каждый правильный ответ.</p>
+    <button class="btn">Поехали</button>
+  </div>
+
+  <!-- ВОПРОСЫ РАУНД 2 -->
+  <div class="screen" id="q5" data-audio="https://cdn.jsdelivr.net/gh/MariaSosn/quiz-audio@main/тяв.mp3">
+    <div class="question">Откуда эта песня?</div>
+    <input type="text" class="answer-input" id="a5">
+    <div class="timer" id="t5">60</div>
+    <button class="btn" data-input="a5">Дальше</button>
+  </div>
+
+  <div class="screen" id="q6" data-audio="https://cdn.jsdelivr.net/gh/MariaSosn/quiz-audio@main/beethoven-symphony-no-5-158810.mp3">
+    <div class="question">Считается, что знаменитая симфония Бетховена начинается со «звука судьбы». Этот момент так назвали потому, что он звучит как... что?</div>
+    <input type="text" class="answer-input" id="a6">
+    <div class="timer" id="t6">60</div>
+    <button class="btn" data-input="a6">Дальше</button>
+  </div>
+
+  <div class="screen" id="q7">
+    <div class="question">В мультфильме «Красавица и Чудовище» Белль начинает танцевать с Чудовищем, и звучит знаменитая песня. Какой персонаж исполняет эту песню?</div>
+    <input type="text" class="answer-input" id="a7">
+    <div class="timer" id="t7">60</div>
+    <button class="btn" data-input="a7">Дальше</button>
+  </div>
+
+  <div class="screen" id="q8" data-audio="https://cdn.jsdelivr.net/gh/MariaSosn/quiz-audio@main/qeen.mp3">
+    <div class="question">Это исполнение на органе известной песни одной группы. Назовите группу.</div>
+    <input type="text" class="answer-input" id="a8">
+    <div class="timer" id="t8">60</div>
+    <button class="btn" data-input="a8">Завершить раунд</button>
+  </div>
+
+  <div class="screen" id="round2End">
+    <h2>Раунд 2 завершен!</h2>
+    <button class="btn">К ответам</button>
+  </div>
+
+  <!-- ОТВЕТЫ РАУНД 2 -->
+  <div class="screen" id="ans2q1">
+    <div class="question">
+      Вопрос 1<br><br>
+      <span class="answer-reveal" data-audio="https://cdn.jsdelivr.net/gh/MariaSosn/quiz-audio@main/тяв.mp3">
+        Правильный ответ: Щенячий патруль
+      </span>
+    </div>
+    <button class="btn">Дальше</button>
+  </div>
+
+  <div class="screen" id="ans2q2">
+    <div class="question">
+      Вопрос 2<br><br>
+      <span class="answer-reveal" data-audio="https://cdn.jsdelivr.net/gh/MariaSosn/quiz-audio@main/beethoven-symphony-no-5-158810.mp3">
+        Правильный ответ: Стук в дверь
+      </span>
+    </div>
+    <button class="btn">Дальше</button>
+  </div>
+
+ <div class="screen" id="ans2q3">
+  <div class="question">
+    Вопрос 3<br><br>
+    <span class="answer-reveal" data-video="video miss potts.mp4">
+      Правильный ответ: Миссис Поттс
+    </span>
+  </div>
+  <button class="btn">Дальше</button>
+</div>
+
+  <div class="screen" id="ans2q4">
+    <div class="question">
+      Вопрос 4<br><br>
+      <span class="answer-reveal" data-audio="https://cdn.jsdelivr.net/gh/MariaSosn/quiz-audio@main/qeen.mp3">
+        Правильный ответ: Queen
+      </span>
+      <br>
+      <button class="btn">Следующий раунд</button>
+    </div>
+  </div>
+
+  <!-- ROUND 3 TITLE -->
+  <div class="screen" id="round3Title" data-audio="https://cdn.jsdelivr.net/gh/MariaSosn/quiz-audio@main/madrigal.mp3" data-audio-loop="true">
+    <h2>Раунд 3: Картинки</h2>
+    <p>Вопросы в картинках, подключаются и самые маленькие🌠 1 балл за каждый правильный ответ.</p>
+    <button class="btn">Поехали</button>
+  </div>
+
+  <!-- ВОПРОСЫ РАУНД 3 -->
+  <div class="screen" id="q9">
+    <div class="question">
+      Какой мультфильм зашифрован на постере?<br><br>
+      <img src="https://i.postimg.cc/gJmybJ2H/Poster-V-Stile-Minimalizm-srednij-razmer.jpg" class="question" alt="Постер">
+    </div>
+    <input type="text" class="answer-input" id="a9">
+    <div class="timer" id="t9">60</div>
+    <button class="btn" data-input="a9">Дальше</button>
+  </div>
+
+  <div class="screen" id="q10">
+    <div class="question">
+      Что спрятано на картинке?<br><br>
+      <img src="https://i.postimg.cc/gjZNY0hP/mar'anavopros.png" class="slide-image">
+    </div>
+    <input type="text" class="answer-input" id="a10">
+    <div class="timer" id="t10">60</div>
+    <button class="btn" data-input="a10">Дальше</button>
+  </div>
+
+  <div class="screen" id="q11">
+    <div class="question">
+      Соедините изображение игрушки с ее названием. Ответ запишите в формате цифра-буква.<br><br>
+      <img src="https://i.postimg.cc/ZKRY5T1D/photo-output.avif" class="slide-image">
+    </div>
+    <input type="text" class="answer-input" id="a11">
+    <div class="timer" id="t11">60</div>
+    <button class="btn" data-input="a11">Дальше</button>
+  </div>
+
+  <div class="screen" id="q12">
+    <div class="question">
+      Это первый кадр какого мультфильма?<br><br>
+      <img src="https://i.postimg.cc/mZcRvdCz/temp-Image-YOJDo-I.avif" class="slide-image">
+    </div>
+    <input type="text" class="answer-input" id="a12">
+    <div class="timer" id="t12">60</div>
+    <button class="btn" data-input="a12">Завершить раунд</button>
+  </div>
+
+  <div class="screen" id="round3End">
+    <h2>Раунд 3 завершен!</h2>
+    <button class="btn">К ответам</button>
+  </div>
+
+  <!-- ОТВЕТЫ РАУНД 3 -->
+  <div class="screen" id="ans3q1">
+    <div class="question">
+      Вопрос 1<br><br>
+      <span class="answer-reveal">
+        Правильный ответ: Головоломка<br><br>
+        <img src="https://i.postimg.cc/65XH28mz/image.jpg" class="slide-image">
+      </span>
+    </div>
+    <button class="btn">Дальше</button>
+  </div>
+
+  <div class="screen" id="ans3q2">
+    <div class="question">
+      Вопрос 2<br><br>
+      <span class="answer-reveal">
+        Правильный ответ: Букварь<br><br>
+        <img src="https://i.postimg.cc/hGdBVZDg/18925331-4.webp" class="slide-image">
+      </span>
+    </div>
+    <button class="btn">Дальше</button>
+  </div>
+
+  <div class="screen" id="ans3q3">
+    <div class="question">
+      Вопрос 3<br><br>
+      <span class="answer-reveal">
+        Правильный ответ: 1-B,2-C,3-A<br><br>
+        <img src="https://i.postimg.cc/pVfrxd5n/photo-output-2.avif" class="slide-image">
+      </span>
+    </div>
+    <button class="btn">Дальше</button>
+  </div>
+
+  <div class="screen" id="ans3q4">
+    <div class="question">
+      Вопрос 4<br><br>
+      <span class="answer-reveal">
+        Правильный ответ: Шрек<br><br>
+        <img src="https://i.postimg.cc/ZnMDXmmk/shrek-27.jpg" class="slide-image">
+      </span>
+    </div>
+    <button class="btn">Следующий раунд</button>
+  </div>
+
+  <!-- ROUND 4 TITLE -->
+  <div class="screen" id="round4Title" data-audio="https://cdn.jsdelivr.net/gh/MariaSosn/quiz-audio@main/чгк.mp3" data-audio-loop="true">
+    <h2>Раунд 4: Мозговой штурм</h2>
+    <p>Самые сложные вопросы🧠 3 балла за каждый правильный ответ.</p>
+    <button class="btn">Поехали</button>
+  </div>
+
+  <!-- ВОПРОСЫ РАУНД 4 -->
+  <div class="screen" id="q13">
+    <div class="question">В мультфильме «Храбрая сердцем» главная героиня Мерида ест в кадре только определенные продукты. В одной из сцен она успевает лишь надкусить эту еду, так как мать прерывает ее. Эта сцена является отсылкой к человеку, которому был посвящен мультфильм. Назовите этого человека.</div>
+    <input type="text" class="answer-input" id="a13">
+    <div class="timer" id="t13">60</div>
+    <button class="btn" data-input="a13">Дальше</button>
+  </div>
+
+  <div class="screen" id="q14">
+    <div class="question">Согласно арабской пословице ОН уже привык к ударам. Назовите его.</div>
+    <input type="text" class="answer-input" id="a14">
+    <div class="timer" id="t14">60</div>
+    <button class="btn" data-input="a14">Дальше</button>
+  </div>
+
+  <div class="screen" id="q15">
+    <div class="question">Хаяо Миядзаки остался недоволен политикой проката своего анимационного фильма «Навсикая из Долины ветров» в США. Поэтому перед началом проката «Принцессы Мононоке» Миядзаки прислал прокатчику декоративную катану. На ней были пятна крови и предостережение из двух слов. Напишите эти слова на русском или английском.</div>
+    <input type="text" class="answer-input" id="a15">
+    <div class="timer" id="t15">60</div>
+    <button class="btn" data-input="a15">Дальше</button>
+  </div>
+
+  <div class="screen" id="q16">
+    <div class="question">В 1936 году советские дети были еще плохо с НИМ знакомы, и в одном детском саду ЕГО приняли за пожилого колхозника. Назовите ЕГО.</div>
+    <input type="text" class="answer-input" id="a16">
+    <div class="timer" id="t16">60</div>
+    <button class="btn" data-input="a16">Завершить раунд</button>
+  </div>
+
+  <div class="screen" id="round4End">
+    <h2>Раунд 4 завершен!</h2>
+    <button class="btn">К ответам</button>
+  </div>
+
+  <!-- ОТВЕТЫ РАУНД 4 -->
+  <div class="screen" id="ans4q1">
+    <div class="question">
+      Вопрос 1<br><br>
+      <span class="answer-reveal" data-video="https://raw.githubusercontent.com/MariaSosn/quiz-audio/main/vidoe.mp4">
+        Правильный ответ: Стив Джобс. Мерида ест яблоки.<br><br>
+        <img src="https://postimg.cc/r0xfh7wg" class="slide-image">
+      </span>
+      <br>
+      <button class="btn">Дальше</button>
+    </div>
+  </div>
+
+  <div class="screen" id="ans4q2">
+    <div class="question">
+      Вопрос 2<br><br>
+      <span class="answer-reveal">
+        Правильный ответ: Барабан. Барабан уже привык к ударам.<br><br>
+        <img src="https://i.postimg.cc/3JSpvyTZ/images-q-tbn-ANd9Gc-RQItn-Hu4QV2b-CORp-Hs-VDtv-X3Mx-JSi-Wcv-Uo-Yw-s.jpg" class="slide-image">
+      </span>
+      <br>
+      <button class="btn">Дальше</button>
+    </div>
+  </div>
+
+  <div class="screen" id="ans4q3">
+    <div class="question">
+      Вопрос 3<br><br>
+      <span class="answer-reveal">
+        Правильный ответ: Не резать / No cut<br><br>
+        <img src="https://i.postimg.cc/5NbRgxnz/EIiag-QPXUAAitn-O.jpg" class="slide-image">
+      </span>
+      <br>
+      <button class="btn">Дальше</button>
+    </div>
+  </div>
+
+  <div class="screen" id="ans4q4">
+    <div class="question">
+      Вопрос 4<br><br>
+      <span class="answer-reveal">
+        Правильный ответ: Дед Мороз, Санта-Клаус<br><br>
+        <img src="https://i.postimg.cc/g0NMLMjC/ded-moroz-otkrytki-2.jpg" class="slide-image">
+      </span>
+      <br>
+      <button class="btn">Финал</button>
+    </div>
+  </div>
+
+  <!-- ФИНАЛ / РЕЗУЛЬТАТЫ -->
+  <div class="screen" id="final">
+    <h2>Игра окончена!</h2>
+    <button class="btn" data-action="showResults">Посмотреть результаты</button>
+  </div>
+
+  <div class="screen" id="results" data-audio="queen-we-are-the-champions.mp3">
+    <h2>Результаты</h2>
+    <div id="confettiOverlay" aria-hidden="true"></div>
+    <div id="resultsList"></div>
+  </div>
+
+</body>
+</html>
